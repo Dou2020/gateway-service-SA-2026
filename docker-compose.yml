@@ -1,0 +1,41 @@
+# api-gateway. Proyecto Compose propio, sin base: usa el Redis del proyecto infra. Se levanta con
+# ./stack.sh up api-gateway, que lo deja al final, después de los servicios.
+#
+# Solo está en la red "transporte". Ahí encuentra a cada servicio por su nombre (http://, sin
+# Eureka), y Caddy lo encuentra a él en producción. El puerto se publica solo en 127.0.0.1: en
+# desarrollo lo usan el frontend y Swagger desde el host, y en producción entra por Caddy.
+#
+# El gateway no espera a los servicios: si uno no está arriba, esa ruta responde 503 y las
+# demás siguen funcionando. Cada servicio nuevo agrega aquí su <SERVICIO>_URL.
+
+name: api-gateway
+
+services:
+  api-gateway:
+    build: .
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+      IDENTITY_URL: http://identity-service:8081
+      CUSTOMER_URL: http://customer-service:8085
+      FINANCE_URL: http://finance-service:8086
+      JWT_SECRET: ${JWT_SECRET:?definir JWT_SECRET en api-gateway/.env, igual al de identity-service}
+      FRONTEND_URL: ${FRONTEND_URL:-http://localhost:3000}
+      PROXIES_CONFIABLES: ${PROXIES_CONFIABLES:-0}
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=50   # mismo criterio que identity-service
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 30s
+    mem_limit: 768m
+    networks: [transporte]
+    restart: unless-stopped
+
+networks:
+  transporte:
+    external: true

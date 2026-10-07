@@ -1,0 +1,142 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: api-gateway
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:redis_dev}
+      # La revocación se consulta en cada request: si Redis tarda más, el gateway
+      # deja pasar (WARN + métrica) en vez de frenar la venta de boletos.
+      timeout: 200ms
+      connect-timeout: 500ms
+  cloud:
+    gateway:
+      server:
+        webflux:
+          globalcors:
+            cors-configurations:
+              "[/api/**]":
+                allowed-origins: ${FRONTEND_URL:http://localhost:3000}
+                allowed-methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
+                allowed-headers: "*"
+                exposed-headers: [X-Correlation-Id, X-RateLimit-Remaining, X-RateLimit-Replenish-Rate, X-RateLimit-Burst-Capacity, X-RateLimit-Requested-Tokens, Location]
+          httpclient:
+            # Un servicio caído se detecta rápido (503) y uno colgado no retiene la request.
+            connect-timeout: 2000
+            response-timeout: 15s
+          # http:// y no lb://: sin Eureka, el DNS de Compose resuelve cada servicio.
+          # Cada servicio nuevo agrega aquí sus rutas /api/** y su /v3/api-docs/<servicio>.
+          # /internal/** no tiene ruta: el gateway nunca lo expone.
+          #
+          # Rate limiting por ruta (README, "Rate limiting"), sin default-filters: el bucket en
+          # Redis se arma con la ruta y la clave, y dos limitadores en la misma ruta compartirían
+          # uno. Para límites menores a uno por segundo: replenishRate = cantidad,
+          # requestedTokens = ventana en segundos, burstCapacity = el producto.
+          routes:
+            # Sin token: 5 por minuto por IP (fuerza bruta, cuentas basura, correos masivos).
+            - id: identity-publico
+              uri: ${IDENTITY_URL:http://localhost:8081}
+              predicates:
+                - Path=/api/auth/login,/api/auth/registro,/api/auth/recuperacion,/api/auth/contrasena
+                - Method=POST
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@limitePorIp}"
+                    redis-rate-limiter.replenishRate: 5
+                    redis-rate-limiter.requestedTokens: 60
+                    redis-rate-limiter.burstCapacity: 300
+            # Con token: 20 por segundo por usuario, ráfagas de 40.
+            - id: identity
+              uri: ${IDENTITY_URL:http://localhost:8081}
+              predicates:
+                - Path=/api/auth/logout,/api/perfil,/api/usuarios,/api/usuarios/**,/api/sucursales,/api/sucursales/**,/api/tarifas,/api/tarifas/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@limitePorUsuario}"
+                    redis-rate-limiter.replenishRate: 20
+                    redis-rate-limiter.burstCapacity: 40
+            - id: identity-docs
+              uri: ${IDENTITY_URL:http://localhost:8081}
+              predicates:
+                - Path=/v3/api-docs/identity
+              filters:
+                - RewritePath=/v3/api-docs/identity, /v3/api-docs
+            # customer: recarga de cartera. 10 por minuto por usuario (abuso de operaciones de
+            # dinero); va antes de la ruta general de customer.
+            - id: customer-recarga
+              uri: ${CUSTOMER_URL:http://localhost:8085}
+              predicates:
+                - Path=/api/cartera/recargas
+                - Method=POST
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@limitePorUsuario}"
+                    redis-rate-limiter.replenishRate: 10
+                    redis-rate-limiter.requestedTokens: 60
+                    redis-rate-limiter.burstCapacity: 600
+            # customer: clientes por NIT, cartera, alquileres e historial. Con token: 20 por
+            # segundo por usuario, ráfagas de 40.
+            - id: customer
+              uri: ${CUSTOMER_URL:http://localhost:8085}
+              predicates:
+                - Path=/api/clientes,/api/clientes/**,/api/cartera,/api/cartera/**,/api/alquileres,/api/alquileres/**,/api/historial
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@limitePorUsuario}"
+                    redis-rate-limiter.replenishRate: 20
+                    redis-rate-limiter.burstCapacity: 40
+            - id: customer-docs
+              uri: ${CUSTOMER_URL:http://localhost:8085}
+              predicates:
+                - Path=/v3/api-docs/customer
+              filters:
+                - RewritePath=/v3/api-docs/customer, /v3/api-docs
+            # finance: categorías de gasto, gastos de taller y reportes financieros. Con token: 20 por
+            # segundo por usuario, ráfagas de 40.
+            - id: finance
+              uri: ${FINANCE_URL:http://localhost:8086}
+              predicates:
+                - Path=/api/categorias-gasto,/api/categorias-gasto/**,/api/gastos-taller,/api/gastos-taller/**,/api/finanzas/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@limitePorUsuario}"
+                    redis-rate-limiter.replenishRate: 20
+                    redis-rate-limiter.burstCapacity: 40
+            - id: finance-docs
+              uri: ${FINANCE_URL:http://localhost:8086}
+              predicates:
+                - Path=/v3/api-docs/finance
+              filters:
+                - RewritePath=/v3/api-docs/finance, /v3/api-docs
+
+# Swagger agregado: un desplegable con la definición de cada servicio, traída por
+# las rutas *-docs de arriba.
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+    urls:
+      - name: identity
+        url: /v3/api-docs/identity
+      - name: customer
+        url: /v3/api-docs/customer
+      - name: finance
+        url: /v3/api-docs/finance
+
+# Sin valor por defecto: el gateway nunca debe verificar con un secreto conocido.
+# Base64, al menos 32 bytes; el mismo que identity-service.
+jwt:
+  secreto: ${JWT_SECRET}
+
+gateway:
+  # Proxies delante del gateway que agregan X-Forwarded-For (Caddy en producción = 1). En 0
+  # el límite por IP usa la IP de la conexión.
+  proxies-confiables: ${PROXIES_CONFIABLES:0}

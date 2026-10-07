@@ -1,0 +1,55 @@
+# api-gateway: lo que no se versiona de este proyecto. Repite lo que también cubre el
+# .gitignore de la raíz para que el servicio se baste solo (por ejemplo, si pasa a su propio repo).
+# Las rutas con / al inicio son relativas a esta carpeta: un paquete llamado "target" o "build"
+# dentro de src/ no se ignora.
+
+# Maven: compilación y restos de release/versions
+/target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+HELP.md
+
+# Credenciales reales: solo se versiona .env.example, que dice qué variables lleva. También
+# cualquier variante (.env.prod, .env.local) que alguien cree a mano.
+.env
+.env.*
+!.env.example
+
+# Logs de mvn spring-boot:run
+*.log
+/logs/
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+/out/
+
+# VS Code (la extensión de Java genera además bin/ y .factorypath)
+.vscode/
+/bin/
+
+# Eclipse / Spring Tools
+.apt_generated/
+.apt_generated_tests/
+.classpath
+.factorypath
+.project
+.settings/
+.springBeans
+.sts4-cache/
+
+# NetBeans
+/nbproject/private/
+/nbbuild/
+/nbdist/
+/build/
+
+# Sistema operativo
+.DS_Store
+Thumbs.db

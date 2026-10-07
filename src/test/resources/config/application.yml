@@ -1,0 +1,4 @@
+# Solo para las pruebas: se carga además del application.yml principal. El mismo secreto
+# firma los tokens de prueba (Tokens).
+jwt:
+  secreto: Vh93zEp66lBf5j74T1YLv8HjBVnX+Kp+4P+fTSOoBcY=

@@ -1,0 +1,6 @@
+target/
+.idea/
+*.iml
+README.md
+# Credenciales: el build no las necesita y no deben llegar al contexto de Docker
+.env
