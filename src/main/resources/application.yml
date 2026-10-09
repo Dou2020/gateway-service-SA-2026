@@ -117,6 +117,62 @@ spring:
                 - Path=/v3/api-docs/finance
               filters:
                 - RewritePath=/v3/api-docs/finance, /v3/api-docs
+            # Sales: todo /api/** exige JWT; limitar las compras para reducir abuso.
+            - id: sales-compra
+              uri: ${SALES_URL:http://localhost:8083}
+              predicates:
+                - Path=/api/boletos
+                - Method=POST
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@limitePorUsuario}"
+                    redis-rate-limiter.replenishRate: 10
+                    redis-rate-limiter.requestedTokens: 60
+                    redis-rate-limiter.burstCapacity: 600
+            - id: sales
+              uri: ${SALES_URL:http://localhost:8083}
+              predicates:
+                - Path=/api/boletos,/api/boletos/**
+            - id: sales-docs
+              uri: ${SALES_URL:http://localhost:8083}
+              predicates:
+                - Path=/v3/api-docs/sales
+              filters:
+                - RewritePath=/v3/api-docs/sales, /v3/api-docs
+            - id: fleet
+              uri: ${FLEET_URL:http://localhost:8084}
+              predicates:
+                - Path=/api/fleet,/api/fleet/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@limitePorUsuario}"
+                    redis-rate-limiter.replenishRate: 20
+                    redis-rate-limiter.burstCapacity: 40
+            - id: fleet-docs
+              uri: ${FLEET_URL:http://localhost:8084}
+              predicates:
+                - Path=/v3/api-docs/fleet
+              filters:
+                - RewritePath=/v3/api-docs/fleet, /v3/api-docs
+            # No exponer /api/interno/** de trip-service a través del gateway.
+            - id: trip
+              uri: ${TRIP_URL:http://localhost:8082}
+              predicates:
+                - Path=/api/rutas,/api/rutas/**,/api/viajes,/api/viajes/**,/api/configuracion/**
+              filters:
+                - name: RequestRateLimiter
+                  args:
+                    key-resolver: "#{@limitePorUsuario}"
+                    redis-rate-limiter.replenishRate: 20
+                    redis-rate-limiter.burstCapacity: 40
+            - id: trip-docs
+              uri: ${TRIP_URL:http://localhost:8082}
+              predicates:
+                - Path=/v3/api-docs/trip
+              filters:
+                - RewritePath=/v3/api-docs/trip, /v3/api-docs
 
 # Swagger agregado: un desplegable con la definición de cada servicio, traída por
 # las rutas *-docs de arriba.
@@ -130,6 +186,12 @@ springdoc:
         url: /v3/api-docs/customer
       - name: finance
         url: /v3/api-docs/finance
+      - name: sales
+        url: /v3/api-docs/sales
+      - name: fleet
+        url: /v3/api-docs/fleet
+      - name: trip
+        url: /v3/api-docs/trip
 
 # Sin valor por defecto: el gateway nunca debe verificar con un secreto conocido.
 # Base64, al menos 32 bytes; el mismo que identity-service.
