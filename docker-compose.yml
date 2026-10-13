@@ -20,7 +20,7 @@ services:
       REDIS_PORT: "6379"
       REDIS_PASSWORD: ${REDIS_PASSWORD}
       IDENTITY_URL: http://identity-service:8081
-      CUSTOMER_URL: http://customer-service:8085
+      CUSTOMER_URL: http://customer-service:8087
       FINANCE_URL: http://finance-service:8086
       SALES_URL: ${SALES_URL:-http://sales-service:8083}
       FLEET_URL: http://fleet-service:8084

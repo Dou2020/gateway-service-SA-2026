@@ -116,4 +116,24 @@ class FiltroJwtTest extends PruebaConServicioFalso {
                 .exchange()
                 .expectStatus().isForbidden();
     }
+
+    /** identity-publico solo acepta POST: su preflight (OPTIONS) no coincide con la ruta. */
+    @Test
+    void elPreflightDeLasRutasSoloPostTambienPasa() {
+        for (String ruta : new String[] {"/api/auth/login", "/api/auth/recuperacion"}) {
+            cliente.options().uri(ruta)
+                    .header(HttpHeaders.ORIGIN, "http://localhost:3000")
+                    .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .header(HttpHeaders.ACCESS_CONTROL_REQUEST_HEADERS, "content-type")
+                    .exchange()
+                    .expectStatus().isOk()
+                    .expectHeader().valueEquals(HttpHeaders.ACCESS_CONTROL_ALLOW_ORIGIN, "http://localhost:3000");
+            cliente.options().uri(ruta)
+                    .header(HttpHeaders.ORIGIN, "https://otro-sitio.com")
+                    .header(HttpHeaders.ACCESS_CONTROL_REQUEST_METHOD, "POST")
+                    .exchange()
+                    .expectStatus().isForbidden();
+        }
+        assertThat(ServicioFalso.ultimaRuta()).isNull();
+    }
 }

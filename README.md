@@ -34,7 +34,7 @@ base propia: usa el Redis de `infra` (`redis:7-alpine`), y las pruebas levantan 
 api-gateway/
 ├── pom.xml         Spring Cloud 2025.0.3 (Gateway 4.3, WebFlux), Redis reactivo, springdoc, Nimbus
 ├── Dockerfile      dos etapas: Maven compila, JRE 21 corre target/app.jar
-├── docker-compose.yml  proyecto Compose propio, en la red transporte; una <SERVICIO>_URL por servicio
+├── docker-compose.yml  proyecto Compose propio, en la red transporte; una <SERVICIO>_URL por servicio (ver "Destinos")
 ├── .dockerignore   deja target/, .env y archivos del IDE fuera de la imagen
 ├── .gitignore      lo que no se versiona: target/, .env (no .env.example), logs, IDE y SO
 ├── .env.example    variables de su compose (Redis, JWT_SECRET, FRONTEND_URL y PROXIES_CONFIABLES); se copia a .env, que no se versiona
@@ -68,7 +68,7 @@ api-gateway/
         │   ├── PruebaConServicioFalso.java    base: las rutas de identity apuntan al ServicioFalso
         │   ├── Tokens.java                    firma tokens de prueba como EmisorJwt
         │   ├── GatewayApplicationTests.java   rutas, X-Correlation-Id, /internal → 404, docs públicos
-        │   ├── FiltroJwtTest.java             401, X-User-* falsificados, logout no público, CORS
+        │   ├── FiltroJwtTest.java             401, X-User-* falsificados, logout no público, CORS (también el preflight de las rutas solo POST)
         │   ├── RevocacionTest.java            jti revocado y corte por usuario (iat en el mismo segundo pasa)
         │   ├── LimiteTest.java                el sexto login en un minuto → 429
         │   ├── RedisCaidoTest.java            sin Redis la API sigue respondiendo
@@ -87,15 +87,43 @@ No sigue `api/domain/application/infrastructure` como los servicios: no tiene do
 |---|---|---|---|---|
 | `identity-publico` | `POST /api/auth/login`, `/api/auth/registro`, `/api/auth/recuperacion`, `/api/auth/contrasena` | identity-service | No | 5 por minuto por IP |
 | `identity` | `/api/auth/logout`, `/api/perfil`, `/api/usuarios/**`, `/api/sucursales/**`, `/api/tarifas/**` | identity-service | Sí | 20 por segundo por usuario, ráfagas de 40 |
-| — | `/api/**` de fleet, trip, sales, customer y finance | se agregan al crear cada servicio (compra de boletos y recarga de cartera: 10 por minuto por usuario) | Sí | — |
-| — | `/internal/**` | sin ruta → `404` | — | — |
+| `customer-recarga` | `POST /api/cartera/recargas` | customer-service | Sí | 10 por minuto por usuario |
+| `customer` | `/api/clientes/**`, `/api/cartera/**`, `/api/alquileres/**`, `/api/historial` | customer-service | Sí | 20 por segundo por usuario, ráfagas de 40 |
+| `finance` | `/api/categorias-gasto/**`, `/api/gastos-taller/**`, `/api/finanzas/**` | finance-service | Sí | 20 por segundo por usuario, ráfagas de 40 |
+| `sales-compra` | `POST /api/boletos` | sales-service | Sí | 10 por minuto por usuario |
+| `sales` | `/api/boletos/**` | sales-service | Sí | Sin límite |
+| `fleet` | `/api/fleet/**` (buses, choferes y rutas) | fleet-service | Sí | 20 por segundo por usuario, ráfagas de 40 |
+| `trip` | `/api/rutas/**`, `/api/viajes/**`, `/api/configuracion/**` | trip-service | Sí | 20 por segundo por usuario, ráfagas de 40 |
+| — | `/internal/**` y `/api/interno/**` (llamadas internas de trip) | sin ruta → `404` | — | — |
+
+La compra de boletos y la recarga de cartera tienen su propia ruta, declarada **antes** de la general
+de su servicio: el gateway usa la primera que coincide, y cada ruta tiene su propio bucket en Redis.
+notification no tiene ruta: no expone endpoints, solo consume eventos.
+
+### Destinos
+
+Cada ruta va a la URL de una variable: en Compose, el nombre del contenedor en la red `transporte`;
+fuera de Docker (`mvn spring-boot:run`), el valor por defecto de `application.yml`.
+
+| Variable | En Compose (`docker-compose.yml`) | Fuera de Docker |
+|---|---|---|
+| `IDENTITY_URL` | `http://identity-service:8081` | `http://localhost:8081` |
+| `CUSTOMER_URL` | `http://customer-service:8087` | `http://localhost:8087` |
+| `FINANCE_URL` | `http://finance-service:8086` | `http://localhost:8086` |
+| `SALES_URL` | `http://sales-service:8083`; se puede cambiar en `.env` | `http://localhost:8083` |
+| `FLEET_URL` | `http://fleet-service:8084` | `http://localhost:8084` |
+| `TRIP_URL` | `http://trip-service:8082` | `http://localhost:8082` |
+
+Los puertos de sales, fleet y trip son los que usan hoy esos servicios, no los de la tabla
+["Armar un servicio nuevo"](../README.md#armar-un-servicio-nuevo) del README del proyecto
+(8084, 8082 y 8083).
 
 ### Propios
 
 | Método | Ruta | Qué es |
 |---|---|---|
-| GET | `/swagger-ui.html` | Swagger agregado: un desplegable con la definición de cada servicio |
-| GET | `/v3/api-docs/identity` | El `/v3/api-docs` de identity-service, reenviado |
+| GET | `/swagger-ui.html` | Swagger agregado: un desplegable con la definición de cada uno de los seis servicios de abajo |
+| GET | `/v3/api-docs/{identity,customer,finance,sales,fleet,trip}` | El `/v3/api-docs` de cada servicio, reenviado con `RewritePath`. Públicos: no piden token |
 | GET | `/actuator/health` | Salud (healthcheck de Compose) |
 
 ### Encabezados y respuestas propias
@@ -104,7 +132,79 @@ No sigue `api/domain/application/infrastructure` como los servicios: no tiene do
   de borrar los que mande el cliente) y `X-Correlation-Id`, que también devuelve en la respuesta.
 - Responde él mismo, siempre como `ProblemDetail`: `401` (token ausente, inválido, vencido o
   revocado, con `WWW-Authenticate: Bearer`), `404` (sin ruta), `429` (límite superado, con
-  `X-RateLimit-*`), `503` (servicio caído) y `504` (más de 15 s sin respuesta).
+  `X-RateLimit-*`), `503` (servicio caído o sin contenedor en la red `transporte`) y `504` (más de
+  15 s sin respuesta).
 - Si Redis no responde, deja pasar sin revisar la revocación ni contar el límite (WARN y la
   métrica `gateway.revocacion.fallos`).
 
+
+## Levantar en desarrollo
+
+Proyecto Compose propio (`docker-compose.yml` de esta carpeta), sin base: solo el gateway, en la red
+`transporte`. Los comandos van desde `api-gateway/`, salvo el de la infra. El
+[README del proyecto](../README.md#levantar-en-desarrollo) lo describe con `stack.sh`, que todavía no existe;
+aquí va con `docker compose` directo.
+
+1. **Infra**, desde la raíz del proyecto, con su `.env` copiado de `.env.example`. Va primero porque crea la red
+   `transporte`, que este compose declara externa, y porque el gateway necesita Redis:
+
+   ```bash
+   docker compose up -d --wait                  # Redis, RabbitMQ y la red transporte
+   ```
+
+2. **`.env`** de esta carpeta. `REDIS_PASSWORD` tiene que ser el de `../.env`, y `JWT_SECRET` el **mismo** de
+   `../identity-service/.env` (se copia, no se genera otro: con uno distinto, todo token da `401`):
+
+   ```bash
+   cp .env.example .env
+   ```
+
+3. **En Docker**:
+
+   ```bash
+   docker compose up -d --build --wait          # espera a que esté healthy
+   curl localhost:8080/actuator/health          # {"status":"UP"}
+   ```
+
+   Swagger agregado en http://localhost:8080/swagger-ui.html. Conviene levantarlo después de los servicios,
+   aunque no es obligatorio: mientras un servicio no está arriba, sus rutas responden `503`. Con los importados
+   pasa si su compose no está arriba ([sales](../sales-service/README.md#levantar-en-desarrollo),
+   [fleet](../fleet-service/README.md#levantar-en-desarrollo), [trip](../trip-service/README.md#levantar-en-desarrollo)),
+   y las rutas de trip que consultan a fleet responden el `503` del propio trip si fleet no está. Para el día a día:
+
+   ```bash
+   docker compose logs -f api-gateway
+   docker compose up -d --build                 # después de cambiar el código
+   docker compose down
+   ```
+
+4. **Fuera de Docker**, con Java 21 y Maven. Usa el mismo puerto que su contenedor, así que ese contenedor se
+   detiene primero:
+
+   ```bash
+   docker compose stop api-gateway              # si estaba arriba
+   set -a; . ./.env; set +a; mvn spring-boot:run
+   ```
+
+   Fuera de Docker, cada destino es `http://localhost:<puerto>` ([Destinos](#destinos)) y Redis está en
+   `localhost:6379`. Los servicios en Docker publican sus puertos en `127.0.0.1`, así que los encuentra igual.
+
+5. **Pruebas**, con Docker corriendo. Testcontainers levanta su propio Redis, y los servicios de destino son
+   falsos, así que no usa la infra ni los servicios de arriba:
+
+   ```bash
+   mvn -q test
+   mvn -q test -Dtest=RevocacionTest            # una clase
+   ```
+
+6. **Probar**: un login por el gateway y el perfil con el token que devuelve. identity tiene que estar arriba:
+
+   ```bash
+   TOKEN=$(curl -s -X POST localhost:8080/api/auth/login -H 'content-type: application/json' \
+     -d '{"correo": "admin@transporte.gt", "contrasena": "<la de ADMIN_CONTRASENA>"}' \
+     | grep -o '"token":"[^"]*"' | cut -d'"' -f4)
+   curl -s localhost:8080/api/perfil -H "Authorization: Bearer $TOKEN"
+   ```
+
+   Sin token, `GET /api/perfil` da `401` `Inicia sesión para continuar`, y la contraseña equivocada da `401`
+   `Correo o contraseña incorrectos`. El mismo `TOKEN` sirve para cualquier otra ruta `/api/**`.

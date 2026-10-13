@@ -18,6 +18,10 @@ spring:
       server:
         webflux:
           globalcors:
+            # El preflight (OPTIONS) no cumple un predicado Method=POST (identity-publico): sin ruta,
+            # lo atiende el mapping de recursos estáticos de Spring, que sin esto no conoce esta CORS
+            # y lo rechaza con 403. Así tampoco hace falta poner OPTIONS en cada ruta con Method=.
+            add-to-simple-url-handler-mapping: true
             cors-configurations:
               "[/api/**]":
                 allowed-origins: ${FRONTEND_URL:http://localhost:3000}
@@ -70,7 +74,7 @@ spring:
             # customer: recarga de cartera. 10 por minuto por usuario (abuso de operaciones de
             # dinero); va antes de la ruta general de customer.
             - id: customer-recarga
-              uri: ${CUSTOMER_URL:http://localhost:8085}
+              uri: ${CUSTOMER_URL:http://localhost:8087}
               predicates:
                 - Path=/api/cartera/recargas
                 - Method=POST
@@ -84,7 +88,7 @@ spring:
             # customer: clientes por NIT, cartera, alquileres e historial. Con token: 20 por
             # segundo por usuario, ráfagas de 40.
             - id: customer
-              uri: ${CUSTOMER_URL:http://localhost:8085}
+              uri: ${CUSTOMER_URL:http://localhost:8087}
               predicates:
                 - Path=/api/clientes,/api/clientes/**,/api/cartera,/api/cartera/**,/api/alquileres,/api/alquileres/**,/api/historial
               filters:
@@ -94,7 +98,7 @@ spring:
                     redis-rate-limiter.replenishRate: 20
                     redis-rate-limiter.burstCapacity: 40
             - id: customer-docs
-              uri: ${CUSTOMER_URL:http://localhost:8085}
+              uri: ${CUSTOMER_URL:http://localhost:8087}
               predicates:
                 - Path=/v3/api-docs/customer
               filters:
