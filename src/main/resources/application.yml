@@ -18,13 +18,12 @@ spring:
       server:
         webflux:
           globalcors:
-            # El preflight (OPTIONS) no cumple un predicado Method=POST (identity-publico): sin ruta,
-            # lo atiende el mapping de recursos estáticos de Spring, que sin esto no conoce esta CORS
-            # y lo rechaza con 403. Así tampoco hace falta poner OPTIONS en cada ruta con Method=.
+            # Login/recuperación filtran por POST; responder el preflight aunque no
+            # coincida con una ruta restringida por el método.
             add-to-simple-url-handler-mapping: true
             cors-configurations:
               "[/api/**]":
-                allowed-origins: ${FRONTEND_URL:http://localhost:3000}
+                allowed-origins: ${FRONTEND_URL:http://localhost:3000},http://127.0.0.1:3000,http://localhost:5173,http://127.0.0.1:5173
                 allowed-methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS]
                 allowed-headers: "*"
                 exposed-headers: [X-Correlation-Id, X-RateLimit-Remaining, X-RateLimit-Replenish-Rate, X-RateLimit-Burst-Capacity, X-RateLimit-Requested-Tokens, Location]
@@ -164,7 +163,7 @@ spring:
             - id: trip
               uri: ${TRIP_URL:http://localhost:8082}
               predicates:
-                - Path=/api/rutas,/api/rutas/**,/api/viajes,/api/viajes/**,/api/configuracion/**
+                - Path=/api/rutas,/api/rutas/**,/api/viajes,/api/viajes/**,/api/sagas/**,/api/configuracion/**
               filters:
                 - name: RequestRateLimiter
                   args:
