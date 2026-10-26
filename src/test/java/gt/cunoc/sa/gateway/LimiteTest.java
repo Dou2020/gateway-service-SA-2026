@@ -2,6 +2,7 @@ package gt.cunoc.sa.gateway;
 
 import java.util.UUID;
 
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,8 +24,13 @@ class LimiteTest extends PruebaConServicioFalso {
     @Autowired
     ReactiveStringRedisTemplate redis;
 
-    /** Las otras pruebas del mismo contexto también hacen login desde 127.0.0.1. */
+    /**
+     * Las otras pruebas del mismo contexto comparten este Redis y la IP 127.0.0.1: antes, para no heredar sus
+     * logins; después, para no dejarles vacío el bucket de identity-publico (su registro daría 429). Surefire
+     * ordena las clases según el sistema de archivos, así que no se puede contar con correr al final.
+     */
     @BeforeEach
+    @AfterEach
     void vaciarLosContadores() {
         redis.execute(conexion -> conexion.serverCommands().flushAll()).blockLast();
     }
