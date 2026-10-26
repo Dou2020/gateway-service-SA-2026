@@ -1,0 +1,154 @@
+# Pruebas, imagen y despliegue del api-gateway.
+#
+#   push / PR a dev o main  → pruebas
+#   push a main (o a mano)  → pruebas → imagen en GHCR → despliegue en la VM por SSH
+#
+# La VM no compila: solo baja la imagen ya probada. Maven en el servidor sumaría memoria a una máquina que ya
+# corre todo, y la imagen por <sha> permite volver atrás: "Re-run jobs" sobre el job desplegar de una corrida
+# vieja vuelve a poner esa versión. Los secrets viven en el environment "produccion" (README raíz,
+# "Despliegue a producción" → "Pipeline del gateway").
+
+name: ci-cd
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+  workflow_dispatch:
+
+env:
+  # GHCR rechaza mayúsculas en el nombre, y github.repository_owner es "Dou2020"
+  IMAGEN: ghcr.io/dou2020/api-gateway
+
+jobs:
+  pruebas:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+      # Testcontainers levanta su Redis con el Docker que trae ubuntu-latest; los servicios de destino son falsos
+      - run: mvn -B -ntp test
+
+  imagen:
+    needs: pruebas
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # El label "source" enlaza el paquete con este repositorio: así el GITHUB_TOKEN del job desplegar puede
+      # bajarlo aunque el paquete sea privado
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGEN }}:${{ github.sha }}
+            ${{ env.IMAGEN }}:latest
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  desplegar:
+    needs: imagen
+    runs-on: ubuntu-latest
+    environment: produccion
+    # Un despliegue no cancela al que está en curso: cortarlo a mitad de un "up" deja el contenedor a medias
+    concurrency:
+      group: despliegue-api-gateway
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      packages: read
+    env:
+      SSH_HOST: ${{ secrets.SSH_HOST }}
+      SSH_USER: ${{ secrets.SSH_USER }}
+      SSH_PORT: ${{ vars.SSH_PORT || '22' }}
+      DEPLOY_DIR: ${{ vars.DEPLOY_DIR || '/opt/transporte/api-gateway' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Llave .pem y huella fija del servidor: sin StrictHostKeyChecking=no, que aceptaría a cualquiera que se
+      # haga pasar por la VM y le entregaría el .env
+      - name: Preparar SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/vm.pem
+          chmod 600 ~/.ssh/vm.pem
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host vm
+            HostName $SSH_HOST
+            User $SSH_USER
+            Port $SSH_PORT
+            IdentityFile ~/.ssh/vm.pem
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
+          EOF
+
+      # La red transporte y Redis son del proyecto infra, que se levanta una vez a mano en la VM; sin ellos el
+      # gateway no queda healthy y el error de compose no dice por qué
+      - name: Revisar la VM
+        run: |
+          # shellcheck disable=SC2029  # $DEPLOY_DIR y compañía se expanden en el runner a propósito
+          ssh vm "mkdir -p '$DEPLOY_DIR' && docker network inspect transporte >/dev/null" || {
+            echo "::error::Falta la red transporte en la VM: levantar antes el proyecto infra (docker compose up -d --wait en la carpeta de infra)"
+            exit 1
+          }
+
+      - name: Copiar compose y .env
+        env:
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
+          FRONTEND_URL: ${{ vars.FRONTEND_URL }}
+          PROXIES_CONFIABLES: ${{ vars.PROXIES_CONFIABLES || '0' }}
+          GATEWAY_BIND: ${{ vars.GATEWAY_BIND }}
+        run: |
+          scp docker-compose.yml "vm:$DEPLOY_DIR/docker-compose.yml"
+          # Por stdin: los secrets no quedan en la línea de comandos de la VM (ps, historial) ni en el log
+          # shellcheck disable=SC2029  # $DEPLOY_DIR se expande en el runner a propósito
+          {
+            printf 'JWT_SECRET=%s\n' "$JWT_SECRET"
+            printf 'REDIS_PASSWORD=%s\n' "$REDIS_PASSWORD"
+            printf 'FRONTEND_URL=%s\n' "$FRONTEND_URL"
+            printf 'PROXIES_CONFIABLES=%s\n' "$PROXIES_CONFIABLES"
+            printf 'GATEWAY_IMAGE=%s\n' "$IMAGEN:$GITHUB_SHA"
+            if [ -n "$GATEWAY_BIND" ]; then printf 'GATEWAY_BIND=%s\n' "$GATEWAY_BIND"; fi
+          } | ssh vm "umask 077 && cat > '$DEPLOY_DIR/.env'"
+
+      # El GITHUB_TOKEN vence con el job, pero igual no se deja guardado en la VM: logout al salir, falle o no.
+      # --wait hace fallar el job si el contenedor no queda healthy (el health de actuator incluye Redis); el
+      # healthcheck del compose tarda hasta ~3 min en rendirse
+      - name: Desplegar
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # shellcheck disable=SC2029  # $DEPLOY_DIR y compañía se expanden en el runner a propósito
+          ssh vm "set -e
+            cd '$DEPLOY_DIR'
+            trap 'docker logout ghcr.io >/dev/null' EXIT
+            docker login ghcr.io -u '$GITHUB_ACTOR' --password-stdin
+            docker compose pull
+            docker compose up -d --no-build --wait --wait-timeout 300
+            docker image prune -f" <<< "$GHCR_TOKEN"
+
+      - name: Comprobar health
+        run: ssh vm "curl -fsS localhost:8080/actuator/health"
