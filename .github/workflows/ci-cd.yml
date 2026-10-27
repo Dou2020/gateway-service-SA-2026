@@ -74,14 +74,24 @@ jobs:
           EOF
 
       # La red transporte y Redis son del proyecto infra, que se levanta una vez a mano en la VM; sin ellos el
-      # gateway no queda healthy y el error de compose no dice por qué
+      # gateway no queda healthy y el error de compose no dice por qué. Cada comprobación sale con su código
+      # para que el error diga cuál falló: con un solo ||, un usuario fuera del grupo docker se leía como "falta
+      # la red"
       - name: Revisar la VM
         run: |
           # shellcheck disable=SC2029  # $DEPLOY_DIR y compañía se expanden en el runner a propósito
-          ssh vm "mkdir -p '$DEPLOY_DIR' && docker network inspect transporte >/dev/null" || {
-            echo "::error::Falta la red transporte en la VM: levantar antes el proyecto infra (docker compose up -d --wait en la carpeta de infra)"
-            exit 1
-          }
+          set +e
+          ssh vm "mkdir -p '$DEPLOY_DIR' || exit 10
+            docker info >/dev/null 2>&1 || exit 11
+            docker network inspect transporte >/dev/null 2>&1 || exit 12"
+          rc=$?
+          case $rc in
+            0) ;;
+            10) echo "::error::No se pudo crear $DEPLOY_DIR en la VM: revisar los permisos del usuario SSH o la variable DEPLOY_DIR"; exit 1 ;;
+            11) echo "::error::El usuario SSH no puede usar Docker en la VM: sudo usermod -aG docker <usuario> y volver a correr el job"; exit 1 ;;
+            12) echo "::error::Falta la red transporte en la VM: levantar antes el proyecto infra (docker compose up -d --wait en la carpeta de infra)"; exit 1 ;;
+            *) echo "::error::Falló la conexión SSH a la VM (código $rc)"; exit 1 ;;
+          esac
 
       # Se vacía la carpeta antes de descomprimir para que un archivo borrado en el repo no quede en la VM. El
       # contenedor que corre no se toca: sigue con su imagen hasta que el up de abajo lo reemplace. Sin .git
