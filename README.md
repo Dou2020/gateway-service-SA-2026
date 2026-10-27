@@ -34,12 +34,12 @@ base propia: usa el Redis de `infra` (`redis:7-alpine`), y las pruebas levantan 
 api-gateway/
 ├── pom.xml         Spring Cloud 2025.0.3 (Gateway 4.3, WebFlux), Redis reactivo, springdoc, Nimbus
 ├── Dockerfile      dos etapas: Maven compila, JRE 21 corre target/app.jar
-├── docker-compose.yml  proyecto Compose propio, en la red transporte; una <SERVICIO>_URL por servicio (ver "Destinos"); en la VM, la imagen de GATEWAY_IMAGE
+├── docker-compose.yml  proyecto Compose propio, en la red transporte; una <SERVICIO>_URL por servicio (ver "Destinos"); el mismo en la VM
 ├── .dockerignore   deja target/, .env y archivos del IDE fuera de la imagen
 ├── .gitignore      lo que no se versiona: target/, .env (no .env.example), logs, IDE y SO
 ├── .env.example    variables de su compose (Redis, JWT_SECRET, FRONTEND_URL, PROXIES_CONFIABLES y las de la VM); se copia a .env, que no se versiona
 ├── .github/workflows/
-│   └── ci-cd.yml   pruebas en dev y main; en main, imagen a GHCR y despliegue en la VM por SSH (README raíz, "Pipeline del gateway")
+│   └── ci-cd.yml   pruebas en dev y main; en main, sube el código a la VM por SSH y la compila y levanta allá (README raíz, "Pipeline del gateway")
 ├── README.md       estructura y endpoints (este archivo)
 └── src/
     ├── main/

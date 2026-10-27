@@ -1,7 +1,7 @@
 # api-gateway. Proyecto Compose propio, sin base: usa el Redis del proyecto infra. En desarrollo se
 # levanta con docker compose up -d --build (o entorno.sh up, que lo deja al final, después de los
-# servicios). En la VM lo levanta el pipeline (.github/workflows/ci-cd.yml) con la imagen de GHCR que
-# dice GATEWAY_IMAGE y --no-build: allá no hay código que compilar.
+# servicios). En la VM lo levanta el pipeline (.github/workflows/ci-cd.yml): sube el código y corre
+# este mismo compose con --build.
 #
 # Solo está en la red "transporte". Ahí encuentra a cada servicio por su nombre (http://, sin
 # Eureka), y Caddy lo encuentra a él en producción. El puerto se publica solo en 127.0.0.1: en
@@ -16,7 +16,6 @@ name: api-gateway
 
 services:
   api-gateway:
-    image: ${GATEWAY_IMAGE:-api-gateway:dev}
     build: .
     ports:
       - "${GATEWAY_BIND:-127.0.0.1}:8080:8080"

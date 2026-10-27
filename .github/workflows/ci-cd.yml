@@ -1,12 +1,14 @@
-# Pruebas, imagen y despliegue del api-gateway.
+# Pruebas y despliegue del api-gateway.
 #
 #   push / PR a dev o main  → pruebas
-#   push a main (o a mano)  → pruebas → imagen en GHCR → despliegue en la VM por SSH
+#   push a main (o a mano)  → pruebas → despliegue en la VM por SSH
 #
-# La VM no compila: solo baja la imagen ya probada. Maven en el servidor sumaría memoria a una máquina que ya
-# corre todo, y la imagen por <sha> permite volver atrás: "Re-run jobs" sobre el job desplegar de una corrida
-# vieja vuelve a poner esa versión. Los secrets viven en el environment "produccion" (README raíz,
-# "Despliegue a producción" → "Pipeline del gateway").
+# El despliegue sube el código del repositorio a la VM y la imagen se compila allá con docker compose up
+# --build, con el mismo Dockerfile y el mismo compose de desarrollo: sin registro de imágenes ni credenciales
+# de GHCR en la VM. El costo es que Maven corre en el servidor (README raíz, "Primer despliegue": 4 GB de
+# swap). Volver atrás: "Re-run jobs" sobre el job desplegar de una corrida vieja sube y compila ese commit.
+# Los secrets viven en el environment "produccion" (README raíz, "Despliegue a producción" → "Pipeline del
+# gateway"; la lista, en .env.prod).
 
 name: ci-cd
 
@@ -16,10 +18,6 @@ on:
   pull_request:
     branches: [dev, main]
   workflow_dispatch:
-
-env:
-  # GHCR rechaza mayúsculas en el nombre, y github.repository_owner es "Dou2020"
-  IMAGEN: ghcr.io/dou2020/api-gateway
 
 jobs:
   pruebas:
@@ -36,36 +34,9 @@ jobs:
       # Testcontainers levanta su Redis con el Docker que trae ubuntu-latest; los servicios de destino son falsos
       - run: mvn -B -ntp test
 
-  imagen:
+  desplegar:
     needs: pruebas
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
-      - uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      # El label "source" enlaza el paquete con este repositorio: así el GITHUB_TOKEN del job desplegar puede
-      # bajarlo aunque el paquete sea privado
-      - uses: docker/build-push-action@v6
-        with:
-          context: .
-          push: true
-          tags: |
-            ${{ env.IMAGEN }}:${{ github.sha }}
-            ${{ env.IMAGEN }}:latest
-          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  desplegar:
-    needs: imagen
     runs-on: ubuntu-latest
     environment: produccion
     # Un despliegue no cancela al que está en curso: cortarlo a mitad de un "up" deja el contenedor a medias
@@ -74,7 +45,6 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-      packages: read
     env:
       SSH_HOST: ${{ secrets.SSH_HOST }}
       SSH_USER: ${{ secrets.SSH_USER }}
@@ -83,17 +53,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Llave .pem y huella fija del servidor: sin StrictHostKeyChecking=no, que aceptaría a cualquiera que se
-      # haga pasar por la VM y le entregaría el .env
+      # Llave .pem sin huella fija del servidor: accept-new guarda la que presente la VM en la primera conexión
+      # del job y exige esa misma en las siguientes. Como el runner arranca sin known_hosts, no protege contra
+      # quien se haga pasar por la VM desde la primera conexión
       - name: Preparar SSH
         env:
           SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-          SSH_KNOWN_HOSTS: ${{ secrets.SSH_KNOWN_HOSTS }}
         run: |
           install -m 700 -d ~/.ssh
           printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/vm.pem
           chmod 600 ~/.ssh/vm.pem
-          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
           cat > ~/.ssh/config <<EOF
           Host vm
             HostName $SSH_HOST
@@ -101,7 +70,7 @@ jobs:
             Port $SSH_PORT
             IdentityFile ~/.ssh/vm.pem
             IdentitiesOnly yes
-            StrictHostKeyChecking yes
+            StrictHostKeyChecking accept-new
           EOF
 
       # La red transporte y Redis son del proyecto infra, que se levanta una vez a mano en la VM; sin ellos el
@@ -114,7 +83,16 @@ jobs:
             exit 1
           }
 
-      - name: Copiar compose y .env
+      # Se vacía la carpeta antes de descomprimir para que un archivo borrado en el repo no quede en la VM. El
+      # contenedor que corre no se toca: sigue con su imagen hasta que el up de abajo lo reemplace. Sin .git
+      # (la VM no necesita historial) ni target/ (el Dockerfile compila desde src/)
+      - name: Subir el proyecto
+        run: |
+          # shellcheck disable=SC2029  # $DEPLOY_DIR se expande en el runner a propósito
+          tar -czf - --exclude=./.git --exclude=./target . \
+            | ssh vm "set -e; find '$DEPLOY_DIR' -mindepth 1 -delete; tar -xzf - -C '$DEPLOY_DIR'"
+
+      - name: Escribir el .env
         env:
           JWT_SECRET: ${{ secrets.JWT_SECRET }}
           REDIS_PASSWORD: ${{ secrets.REDIS_PASSWORD }}
@@ -122,7 +100,6 @@ jobs:
           PROXIES_CONFIABLES: ${{ vars.PROXIES_CONFIABLES || '0' }}
           GATEWAY_BIND: ${{ vars.GATEWAY_BIND }}
         run: |
-          scp docker-compose.yml "vm:$DEPLOY_DIR/docker-compose.yml"
           # Por stdin: los secrets no quedan en la línea de comandos de la VM (ps, historial) ni en el log
           # shellcheck disable=SC2029  # $DEPLOY_DIR se expande en el runner a propósito
           {
@@ -130,25 +107,20 @@ jobs:
             printf 'REDIS_PASSWORD=%s\n' "$REDIS_PASSWORD"
             printf 'FRONTEND_URL=%s\n' "$FRONTEND_URL"
             printf 'PROXIES_CONFIABLES=%s\n' "$PROXIES_CONFIABLES"
-            printf 'GATEWAY_IMAGE=%s\n' "$IMAGEN:$GITHUB_SHA"
             if [ -n "$GATEWAY_BIND" ]; then printf 'GATEWAY_BIND=%s\n' "$GATEWAY_BIND"; fi
           } | ssh vm "umask 077 && cat > '$DEPLOY_DIR/.env'"
 
-      # El GITHUB_TOKEN vence con el job, pero igual no se deja guardado en la VM: logout al salir, falle o no.
-      # --wait hace fallar el job si el contenedor no queda healthy (el health de actuator incluye Redis); el
-      # healthcheck del compose tarda hasta ~3 min en rendirse
-      - name: Desplegar
-        env:
-          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Compila la imagen en la VM y reemplaza el contenedor. --wait hace fallar el job si no queda healthy (el
+      # health de actuator incluye Redis; el healthcheck tarda hasta ~3 min en rendirse). La compilación con
+      # Maven se suma a ese tiempo, por eso el timeout del job. prune borra la imagen anterior, que quedó sin tag
+      - name: Compilar y levantar en la VM
+        timeout-minutes: 20
         run: |
-          # shellcheck disable=SC2029  # $DEPLOY_DIR y compañía se expanden en el runner a propósito
+          # shellcheck disable=SC2029  # $DEPLOY_DIR se expande en el runner a propósito
           ssh vm "set -e
             cd '$DEPLOY_DIR'
-            trap 'docker logout ghcr.io >/dev/null' EXIT
-            docker login ghcr.io -u '$GITHUB_ACTOR' --password-stdin
-            docker compose pull
-            docker compose up -d --no-build --wait --wait-timeout 300
-            docker image prune -f" <<< "$GHCR_TOKEN"
+            docker compose up -d --build --wait --wait-timeout 300
+            docker image prune -f"
 
       - name: Comprobar health
         run: ssh vm "curl -fsS localhost:8080/actuator/health"
