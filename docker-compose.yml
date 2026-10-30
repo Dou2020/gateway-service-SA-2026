@@ -4,10 +4,10 @@
 # este mismo compose con --build.
 #
 # Solo está en la red "transporte". Ahí encuentra a cada servicio por su nombre (http://, sin
-# Eureka), y Caddy lo encuentra a él en producción. El puerto se publica solo en 127.0.0.1: en
-# desarrollo lo usan el frontend y Swagger desde el host, y en producción entra por Caddy. Mientras
-# la VM no tenga Caddy, GATEWAY_BIND=0.0.0.0 lo abre hacia afuera (Docker se salta ufw: queda
-# abierto aunque el firewall lo niegue).
+# Eureka), y el nginx de infra (profile prod) lo encuentra a él en producción. El puerto se publica
+# solo en 127.0.0.1: en desarrollo lo usan el frontend y Swagger desde el host, y en producción
+# entra por nginx en el 80. GATEWAY_BIND=0.0.0.0 lo abriría hacia afuera sin proxy (Docker se salta
+# ufw: queda abierto aunque el firewall lo niegue); con nginx ya no hace falta.
 #
 # El gateway no espera a los servicios: si uno no está arriba, esa ruta responde 503 y las
 # demás siguen funcionando. Cada servicio nuevo agrega aquí su <SERVICIO>_URL.

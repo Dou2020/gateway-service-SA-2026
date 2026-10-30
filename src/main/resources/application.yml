@@ -202,6 +202,6 @@ jwt:
   secreto: ${JWT_SECRET}
 
 gateway:
-  # Proxies delante del gateway que agregan X-Forwarded-For (Caddy en producción = 1). En 0
+  # Proxies delante del gateway que agregan X-Forwarded-For (el nginx de infra en producción = 1). En 0
   # el límite por IP usa la IP de la conexión.
   proxies-confiables: ${PROXIES_CONFIABLES:0}
